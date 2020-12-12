@@ -1,200 +1,110 @@
-/**
- * @file PapaDuck.ino
- * @brief Uses built-in PapaDuck from the SDK to create a WiFi enabled Papa Duck
- * 
- * This example will configure and run a Papa Duck that connects to the cloud
- * and forwards all messages (except  pings) to the cloud.
- * 
- * @date 2020-11-10
- * 
- * @copyright Copyright (c) 2020
- * ClusterDuck Protocol 
- * 
- * ==================================================================
- * Stackswan :
- * Uses CDP to communicate over LoRa ad-hoc
- * PAPA is upate to work offline
- * TODO: Add stackswan(bluebird) BLE code into this to 
- * log all data on stackswan over BLE
- * ==================================================================
- * 
- */
+/*
+ =================================================================================
+  Stackswan LoRa p2p - (gateway)
+ ---------------------------------------------------------------------------------
+  1) Endpoint can use any unique 2 byte address otherthan 0xFF.
+  2) 0xFF is reserved for all gateway devices in the network
+  3) Sends a message every half second, and polls for incoming messages continually
+  4) if message is for this device then process message otherwise retransmit.
+  5) For easy star networking all non-gateway devices(endpoints) sends message
+     to gateway using 0xFF as target.
+  ---------------------------------------------------------------------------------   
+  Author: Vikas Singh 
+  Date: 12/12/20
+  ==================================================================================
+*/
 
-#include <PapaDuck.h>
 
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
-#include <WiFiClientSecure.h>
-#include "timer.h"
+#include <SPI.h>              
+#include <LoRa.h>             
 
-#define SSID ""
-#define PASSWORD ""
+const int csPin = 5;          // LoRa radio chip select
+const int resetPin = 14;      // LoRa radio reset
+const int irqPin = 2;         // change for your board; must be a hardware interrupt pin
 
-// Used for Mqtt client connection
-// Provided when a Papa Duck device is created in DMS
-#define ORG         ""
-#define DEVICE_ID   ""
-#define DEVICE_TYPE ""
-#define TOKEN       ""
+String outgoing;              // outgoing message
 
-// Use pre-built papa duck: the duck ID is provided by DMS
-PapaDuck duck = PapaDuck(DEVICE_ID);
-
-char server[]           = ORG ".messaging.internetofthings.ibmcloud.com";
-char authMethod[]       = "use-token-auth";
-char token[]            = TOKEN;
-char clientId[]         = "d:" ORG ":" DEVICE_TYPE ":" DEVICE_ID;
-
-// Set this to false if testing quickstart on IBM IoT Platform
-bool use_auth_method = true;
-
-auto timer = timer_create_default(); // create a timer with default settings
-
-WiFiClientSecure wifiClient;
-PubSubClient client(server, 8883, wifiClient);
-
-bool retry = true;
-
-// LORA RF CONFIG
-#define LORA_FREQ 868.0 // Frequency Range. Set for US Region 915.0Mhz
-#define LORA_TXPOWER 20 // Transmit Power
-// LORA HELTEC PIN CONFIG
-#define LORA_CS_PIN 5
-#define LORA_DIO0_PIN 2
-#define LORA_DIO1_PIN -1 // unused
-#define LORA_RST_PIN 14
+byte msgCount = 0;            // count of outgoing messages
+byte localAddress = 0xFF;     // address of this device(0xFF for all gateway devices)
+byte destination = 0xAA;      // destination to send to(unique for each devices)
+long lastSendTime = 0;        // last send time
+int interval = 2000;          // initial interval between sends
 
 void setup() {
   
-
-  /**
-   * duck.setupSerial()
-   * duck.setupRadio();
-   * duck.setupWifi("PapaDuck Setup"); 
-   * duck.setupDns();
-   * duck.setupInternet(SSID, PASSWORD);
-   * duck.setupWebServer(false);
-   * duck.setupOTA();
-   */ 
-
-    // initialize the serial component with the hardware supported baudrate
-  duck.setupSerial(115200);
-  // initialize the LoRa radio with specific settings. This will overwrites settings defined in the CDP config file cdpcfg.h
-  duck.setupRadio(LORA_FREQ, LORA_CS_PIN, LORA_RST_PIN, LORA_DIO0_PIN, LORA_DIO1_PIN, LORA_TXPOWER);
-  // initialize the wifi access point with a custom AP name
-   duck.setupWifi("PapaDuck Setup"); 
-  // initialize DNS
-  duck.setupDns();
-  // initialize web server, enabling the captive portal with a custom HTML page
-//  duck.setupWebServer(true, HTML);
-  duck.setupWebServer(true);
-  // initialize Over The Air firmware upgrade
-  duck.setupOTA();
-
-  // the default setup is equivalent to the above setup sequence
-  //duck.setupWithDefaults(SSID, PASSWORD);
-
+  // initialize serial
+  Serial.begin(115200);                   
+  while (!Serial);
+  Serial.println("stackswan P2P");
   
-  // register a callback to handle incoming data from duck in the network
-  duck.onReceiveDuckData(handleDuckData);
-  
-  Serial.println("[PAPA] Setup OK!");
-}
+  // override the default CS, reset, and IRQ pins (optional)
+  // set CS, reset, IRQ pin
+  LoRa.setPins(csPin, resetPin, irqPin);
 
-// The callback method simply takes the incoming packet and
-// converts it to a JSON string, before sending it out over WiFi
-void handleDuckData(Packet packet) {
-  quackJson(packet);
+  // initialize radio at 866MHz (eg: 915E6, 868E6 etc)
+  if (!LoRa.begin(866E6)) {             
+    Serial.println("LoRa initialization failed. Check your connections.");
+    while (true);                       // if failed, do nothing
+  }
+
+  Serial.println("LoRa initialization succeeded.");
 }
 
 void loop() {
-
-/**
-  if (!duck.isWifiConnected() && retry) {
-    String ssid = duck.getSsid();
-    String password = duck.getPassword();
-    
-    Serial.print("[PAPA] WiFi disconnected, reconnecting to local network: ");
-    Serial.print(ssid);
-
-    int err = duck.reconnectWifi(ssid, password);
-
-    if (err != DUCK_ERR_NONE) {
-      retry = false;
-      timer.in(5000, enableRetry);
-    }
-  }
-  if (duck.isWifiConnected()) {
-    setup_mqtt(use_auth_method);
-  }
-*/
-  duck.run();
-  timer.tick();
-}
-
-/**
-void setup_mqtt(bool use_auth)
-{
-  bool connected = client.connected();
-  if (connected) {
-    return;
-  }
   
-  for (;;) {
-    if (use_auth) {
-      connected = client.connect(clientId, authMethod, token);
-    } else {
-      connected = client.connect(clientId);
-    }
-    if (connected) {
-      Serial.println("[PAPA] mqtt client is connected!");
-      break;
-    }
-    retry_mqtt_connection(500);
-  }
+  // continously parse for a packet, and call onReceive with the result:
+  onReceive(LoRa.parsePacket());
 }
 
-*/
-void quackJson(Packet packet) {
 
-/*
-  if (packet.topic == "ping") {
-    return;
+//method for sending data (not used in gateway for nows)
+void sendMessage(String outgoing) {
+  LoRa.beginPacket();                   // start packet
+  LoRa.write(destination);              // add destination address
+  LoRa.write(localAddress);             // add sender address
+  LoRa.write(msgCount);                 // add message ID
+  LoRa.write(outgoing.length());        // add payload length
+  LoRa.print(outgoing);                 // add payload
+  LoRa.endPacket();                     // finish packet and send it
+  msgCount++;                           // increment message ID
+}
+
+
+
+//method for processing incoming messages
+void onReceive(int packetSize) {
+  if (packetSize == 0) return;          // if there's no packet, return
+
+  // read packet header bytes:
+  int recipient = LoRa.read();          // recipient address
+  byte sender = LoRa.read();            // sender address
+  byte incomingMsgId = LoRa.read();     // incoming msg ID
+  byte incomingLength = LoRa.read();    // incoming msg length
+
+  String incoming = "";
+
+  while (LoRa.available()) {
+    incoming += (char)LoRa.read();
   }
-*/
- // Log RAW payload on serial monitor
-  Serial.println(packet.payload);
-  /*
-  const int bufferSize = 4 *  JSON_OBJECT_SIZE(4);
-  StaticJsonDocument<bufferSize> doc;
 
-  doc["DeviceID"]  = packet.senderId;
-  doc["MessageID"] = packet.messageId;
-  doc["Payload"].set(packet.payload);
-
-  // FIXME: Path shouldn't be altered by the application
-  // It should done in the library PapaDuck component
-  doc["path"].set(packet.path + "," + DEVICE_ID);
-
-  String loc = "iot-2/evt/" + packet.topic + "/fmt/json";
-  Serial.print(loc);
-  // add space for null char
-  int len = loc.length() + 1;
-
-  char topic[len];
-  loc.toCharArray(topic, len);
-
-  String jsonstat;
-  serializeJson(doc, jsonstat);
-
-  if (client.publish(topic, jsonstat.c_str())) {
-    serializeJsonPretty(doc, Serial);
-    Serial.println("");
-    Serial.println("[PAPA] Publish ok");
+  if (incomingLength != incoming.length()) {                        // check length for error
+    Serial.println("error: data in the received payload is corrupted");
+    return;                                                         // skip rest of function
   }
-  else {
-    Serial.println("[PAPA] Publish failed");
-  }
-} */
 
+  // if the recipient isn't this device or broadcast,
+  if (recipient != localAddress && recipient != 0xFF) {
+    Serial.println("This message is not for me.");
+    return;                                                   // skip rest of function
+  }
+
+  // if message is for this device, or broadcast, print details:
+  Serial.println("Received from: 0x" + String(sender, HEX));
+  Serial.println("Sent to: 0x" + String(recipient, HEX));
+  Serial.println("Message ID: " + String(incomingMsgId));
+  Serial.println("Message length: " + String(incomingLength));
+  Serial.println("Message: " + incoming);
+  Serial.println("RSSI: " + String(LoRa.packetRssi()));
+  Serial.println("Snr: " + String(LoRa.packetSnr()));
+  Serial.println();
 }
