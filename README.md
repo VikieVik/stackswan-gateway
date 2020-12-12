@@ -1,2 +1,2 @@
 # stackswan-gateway
-A PAPA duck based on ClusterDuck Protocol to emit data over BLE without needing MQTT&amp;WIFI
+A gateway device to route data from LoRa p2p network to web over BLE or WIFI
